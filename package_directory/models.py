@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import uuid
 
@@ -15,9 +16,20 @@ def app_directory_path(instance, filename):
     return str(uuid.uuid3(uuid.NAMESPACE_URL, unique_name)) + '.apk'
 
 def extract_apk_package_data(path):
-    cmd = """aapt dump badging %s | grep versionName | awk -F ':' '{print $2}'""" % (path,)
+    cmd = """aapt dump badging %s | grep versionName""" % (path,)
     response_str = os.popen(cmd).read()
-    return {i[0]: i[1].strip("'") for i in (item.split('=') for item in response_str.strip().split(' '))}
+
+    match = re.compile("package: name='(\\S+)' versionCode='(\\d+)' versionName='([0-9\\.\\s]+)'").match(response_str)
+    if not match:
+        raise Exception("can't get packageinfo")
+    package_name = match.group(1)
+    version_code = match.group(2)
+    version_name = match.group(3)
+
+    return {
+       'package_name': package_name, 
+       'package_version_code': version_code,
+    }
 
 
 class Application(models.Model):
@@ -34,13 +46,6 @@ class Application(models.Model):
     
     def __str__(self):
         return self.package_name
-
-    def get_apk_field_map(self):
-        """ Map between the property of package informations (from  `aapt` and its corresponding model field name"""
-        return {
-            'name': 'package_name',
-            'versionCode': 'package_version_code',
-        }
 
 
 @receiver(models.signals.post_delete, sender=Application)
@@ -64,11 +69,10 @@ def auto_delete_file_on_change(sender, instance, **kwargs):
     if instance:
         if instance.apk_file and isinstance(instance.apk_file.file, TemporaryUploadedFile):  # heuristic to say "we change the apk file"
             pkg_data = extract_apk_package_data(instance.apk_file.file.temporary_file_path())
-            mapping = instance.get_apk_field_map()
 
-            for pkg_field, model_fname in mapping.items():
-                if pkg_data.get(pkg_field):
-                    instance.__dict__[model_fname] = pkg_data.get(pkg_field)  # instance[myfield] is not working, maybe we should use setattr 
+            for fname, value in pkg_data.items():
+                if not instance.__dict__[fname]:
+                    instance.__dict__[fname] = value  # instance[myfield] is not working, maybe we should use setattr 
     
     if not instance.pk:
         return False
